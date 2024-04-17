@@ -11,11 +11,11 @@ import numpy as np
 #df.columns = ['variance', 'skewness', 'curtosis', 'entropy', 'target']
 #X, y = df.iloc[:,:4], df['target']
 
-X, y = make_classification(n_samples=150, n_features=5, n_informative=3, random_state=42)
-X = pd.DataFrame(X).round(2)
-y = pd.Series(y)
-X.columns = [f'col_{col}' for col in X.columns]
-test = X.sample(20, random_state=42)
+#X, y = make_classification(n_samples=150, n_features=5, n_informative=3, random_state=42)
+#X = pd.DataFrame(X).round(2)
+#y = pd.Series(y)
+#X.columns = [f'col_{col}' for col in X.columns]
+#test = X.sample(20, random_state=42)
 
 class Tree():
     
@@ -70,11 +70,10 @@ class MyTreeClf():
     def __init__(self, max_depth = 5, min_samples_split = 2, max_leafs = 20, bins = None, criterion = 'entropy'):
         self.max_depth = max_depth
         self.min_samples_split = min_samples_split
-        self.max_leafs = max_leafs
+        self.max_leafs = max(2, max_leafs)
         self.eps = 1e-15
         self.leafs_cnt = 0
         self.tree = Tree()
-        self.depth = 0
         self.bins = bins
         self.criterion = criterion
         self.fi = {}
@@ -151,9 +150,14 @@ class MyTreeClf():
             ans += len(self.hist[column][(self.hist[column] > X[column].min()) & (self.hist[column] < X[column].max())])
         return ans
     
-    def growth_tree(self, X: pd.DataFrame, y: pd.Series, depth: int) -> Tree:
+    def growth_tree(self, X: pd.DataFrame, y: pd.Series, depth: int, future_leafs: int) -> Tree:
         node = Tree()
-        if len(y.unique()) == 1 or depth > self.max_depth - 1 or len(y) < self.min_samples_split or (self.leafs_cnt >= self.max_leafs - 1 and depth > 0) or (self.bins and self.splits_count(X) == 0):
+        if (len(y.unique()) == 1 or 
+            depth >= self.max_depth or 
+            len(y) < self.min_samples_split or 
+            self.leafs_cnt + future_leafs >= self.max_leafs - 1 or 
+            (self.bins and self.splits_count(X) == 0)
+            ):
             node = Tree(kind = 'leaf', proba = y.sum() / len(y), samples = len(y))
             self.leafs_cnt += 1
         else:
@@ -165,8 +169,8 @@ class MyTreeClf():
             y_left = y[left]
             X_right = X[right]
             y_right = y[right]
-            node.left = self.growth_tree(X_left, y_left, depth + 1)
-            node.right = self.growth_tree(X_right, y_right, depth + 1)
+            node.left = self.growth_tree(X_left, y_left, depth + 1, future_leafs + 1)
+            node.right = self.growth_tree(X_right, y_right, depth + 1, future_leafs)
         return node
     
     def fit(self, X: pd.DataFrame, y: pd.Series):
@@ -180,7 +184,7 @@ class MyTreeClf():
                 _, bin_edges = np.histogram(X[column], self.bins)
                 h[column] = bin_edges[1:-1]
             self.hist = pd.DataFrame(h)
-        self.tree = self.growth_tree(X, y, self.depth)
+        self.tree = self.growth_tree(X, y, 0, 0)
 
     def predict(self, X: pd.DataFrame):
         ans = []
@@ -193,10 +197,101 @@ class MyTreeClf():
         for index, row in X.iterrows():
             ans += [self.tree.traversal(row)]
         return pd.Series(ans)
-        
-a = MyTreeClf(max_depth = 8, min_samples_split = 5, max_leafs = 15, bins = 10, criterion = 'gini')
-a.fit(X, y)
-a.print_tree()
-print(a.leafs_cnt)
-print(a.predict_proba(test).sum())
-print(a.fi)
+
+d = {
+    'max_depth': 15,
+    'min_samples_split': 20,
+    'max_leafs': 30,
+    'bins': 6
+    }
+
+#X, y = make_classification(n_samples=150, n_features=5, n_informative=3, random_state=42)
+#X = pd.DataFrame(X).round(2)
+#y = pd.Series(y)
+#X.columns = [f'col_{col}' for col in X.columns]
+#test = X.sample(20, random_state=42)
+
+d = [{
+    'max_depth': 1,
+    'min_samples_split': 1,
+    'max_leafs': 2,
+    'bins': None
+    },
+    {
+    'max_depth': 3,
+    'min_samples_split': 2,
+    'max_leafs': 5,
+    'bins': None
+    },
+    {
+    'max_depth': 5,
+    'min_samples_split': 200,
+    'max_leafs': 10,
+    'bins': None
+    },
+    {
+    'max_depth': 4,
+    'min_samples_split': 100,
+    'max_leafs': 17,
+    'bins': None
+    },
+    {
+    'max_depth': 10,
+    'min_samples_split': 40,
+    'max_leafs': 21,
+    'bins': None
+    },
+    {
+    'max_depth': 15,
+    'min_samples_split': 20,
+    'max_leafs': 30,
+    'bins': None
+    },
+]
+
+df = pd.read_csv('banknote+authentication.zip', header=None)
+df.columns = ['variance', 'skewness', 'curtosis', 'entropy', 'target']
+X, y = df.iloc[:,:4], df['target']
+
+#X, y = make_classification(n_samples=150, n_features=5, n_informative=3, random_state=42)
+#X = pd.DataFrame(X).round(2)
+#y = pd.Series(y)
+#X.columns = [f'col_{col}' for col in X.columns]
+
+for i in d:
+    a = MyTreeClf(**i, criterion = 'entropy')
+    a.fit(X, y)
+    a.print_tree()
+    print(a.leafs_cnt)
+    print(a.tree.proba_sum())
+    #break
+#print(a.predict_proba(test).sum())
+#print(a.predict_proba(X).sum())
+#print(a.fi)
+
+#d = [{
+#    'max_depth': 8,
+#    'min_samples_split': 5,
+#    'max_leafs': 15,
+#    'bins': 10
+#    },
+#    {
+#    'max_depth': 5,
+#    'min_samples_split': 5,
+#    'max_leafs': 10,
+#    'bins': 15
+#    },
+#]
+#
+#X, y = make_classification(n_samples=150, n_features=5, n_informative=3, random_state=42)
+#X = pd.DataFrame(X).round(2)
+#y = pd.Series(y)
+#X.columns = [f'col_{col}' for col in X.columns]
+#
+#for i in d:
+#    a = MyTreeClf(**i, criterion = 'entropy')
+#    a.fit(X, y)
+#    a.print_tree()
+#    print(a.leafs_cnt)
+#    print(a.tree.proba_sum())
+#
