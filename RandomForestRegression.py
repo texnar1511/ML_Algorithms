@@ -1,17 +1,8 @@
+import numpy as np
 import pandas as pd
 from sklearn.datasets import make_regression
-import numpy as np
-
-#X, y = make_regression(n_samples = 50, n_features = 20, n_informative = 2, noise = 5, random_state = 42)
-#X = pd.DataFrame(X).round(2)
-#y = pd.Series(y)
-#X.columns = [f'col_{col}' for col in X.columns]
-#test = X.sample(20, random_state = 42)
-
-#from sklearn.datasets import load_diabetes
-
-#data = load_diabetes(as_frame=True)
-#X, y = data['data'], data['target']
+import random
+import time
 
 class Tree():
     
@@ -62,7 +53,7 @@ class MyTreeReg():
         Decision tree regression
     '''
 
-    def __init__(self, max_depth = 5, min_samples_split = 2, max_leafs = 20, bins = None):
+    def __init__(self, max_depth = 5, min_samples_split = 2, max_leafs = 20, bins = None, total_samples = 1):
         self.max_depth = max_depth
         self.min_samples_split = min_samples_split
         self.max_leafs = max(2, max_leafs)
@@ -71,7 +62,7 @@ class MyTreeReg():
         self.tree = Tree()
         self.bins = bins
         self.fi = {}
-        self.total_samples = 0
+        self.total_samples = total_samples
 
     def __str__(self):
         ans = 'MyTreeReg class:\n'
@@ -87,7 +78,7 @@ class MyTreeReg():
     def MSE(self, classes: pd.Series):
         if len(classes) == 0:
             return 0.0
-        return ((classes - classes.mean()) ** 2).sum() / len(classes)
+        return ((classes - classes.mean()) ** 2).mean()
     
     def MSEGain(self, X: pd.DataFrame, y: pd.Series, column: str, split: float):
         M0 = self.MSE(y)
@@ -132,23 +123,22 @@ class MyTreeReg():
             self.leafs_cnt + future_leafs >= self.max_leafs - 1 or 
             (self.bins and self.splits_count(X) == 0)
             ):
-            node = Tree(kind = 'leaf', proba = y.sum() / len(y), samples = len(y))
+            node = Tree(kind = 'leaf', proba = y.mean(), samples = len(y))
             self.leafs_cnt += 1
         else:
             node = Tree(*self.get_best_split(X, y), samples = len(y))
             self.fi[node.column] += self.FeatureImportance(X, y, node.column, node.split)
             left = X[node.column] <= node.split
             right = X[node.column] > node.split
-            X_left = X[left]
-            y_left = y[left]
-            X_right = X[right]
-            y_right = y[right]
-            node.left = self.growth_tree(X_left, y_left, depth + 1, future_leafs + 1)
-            node.right = self.growth_tree(X_right, y_right, depth + 1, future_leafs)
+            #X_left = X[left]
+            #y_left = y[left]
+            #X_right = X[right]
+            #y_right = y[right]
+            node.left = self.growth_tree(X[left], y[left], depth + 1, future_leafs + 1)
+            node.right = self.growth_tree(X[right], y[right], depth + 1, future_leafs)
         return node
     
     def fit(self, X: pd.DataFrame, y: pd.Series) -> None:
-        self.total_samples = len(X)
         for column in X:
             self.fi[column] = 0
         self.hist = pd.DataFrame()
@@ -169,67 +159,125 @@ class MyTreeReg():
         for index, row in X.iterrows():
             ans += [self.tree.traversal(row)]
         return pd.Series(ans)
-        
-#a = MyTreeReg(max_depth = 15, min_samples_split = 35, max_leafs = 30, bins = None)
-#print(a.get_best_split(X, y))
+
+class MyForestReg():
+
+    def __init__(self, 
+                 n_estimators = 10, 
+                 max_features = 0.5, 
+                 max_samples = 0.5,
+                 oob_score = None, 
+                 max_depth = 5,
+                 min_samples_split = 2,
+                 max_leafs = 20,
+                 bins = 16,
+                 random_state = 42
+                 ):
+        self.n_estimators = n_estimators
+        self.max_features = max_features
+        self.max_samples = max_samples
+        self.oob_score = oob_score #mae, mse, rmse, mape, r2
+        self.max_depth = max_depth
+        self.min_samples_split = min_samples_split
+        self.max_leafs = max_leafs
+        self.bins = bins
+        self.random_state = random_state
+        self.leafs_cnt = 0
+        self.forest: list[MyTreeReg] = []
+        self.fi = {}
+        self.oob_score_ = 0
+        self.func = {'mae': self.MAE, 'mse': self.MSE, 'rmse': self.RMSE, 'mape': self.MAPE, 'r2': self.R2}
+
+
+    def __str__(self):
+        ans = 'MyForestReg class:'
+        for key in self.__dict__:
+            ans += f' {key}={self.__dict__[key]},'
+        return ans[:-1]
+    
+    def fit(self, X: pd.DataFrame, y: pd.Series) -> None:
+        random.seed(self.random_state)
+        for column in X:
+            self.fi[column] = 0
+        self.oob_preds = []
+        n = round(X.shape[1] * self.max_features)
+        m = round(X.shape[0] * self.max_samples)
+        for i in range(self.n_estimators):
+            cols_idx = random.sample(list(X.columns), n)
+            rows_idx = random.sample(range(X.shape[0]), m)
+            X_s = X.loc[rows_idx, cols_idx]
+            y_s = y.loc[rows_idx]
+            tree = MyTreeReg(self.max_depth, self.min_samples_split, self.max_leafs, self.bins, X.shape[0])
+            tree.fit(X_s, y_s)
+            self.forest += [tree]
+            self.leafs_cnt += tree.leafs_cnt
+            rows_idx_oob = list(set(range(X.shape[0])) - set(rows_idx))#[i for i in range(X.shape[0]) if i not in rows_idx]
+            #print(rows_idx_oob)
+            X_s_oob = X.loc[rows_idx_oob, cols_idx]
+            pred_oob = tree.predict(X_s_oob)
+            #pred_oob = pd.Series(range(X_s_oob.shape[0]))
+            pred_oob.index = X_s_oob.index
+            #pred_oob = pred_oob.reindex(range(X.shape[0]))
+            #print(pred_oob)
+            self.oob_preds += [pred_oob]
+
+        #start = time.time()
+        self.oob_preds = pd.DataFrame(self.oob_preds).mean(axis = 0)
+        #end = time.time()
+        #print(end - start)
+        #print(self.oob_preds)
+        #self.oob_preds = self.oob_preds.mean(axis = 0)
+        #print(self.oob_preds)
+        #print(self.oob_preds.mean(axis = 0))
+        #print(y.iloc[self.oob_preds.index])
+
+        if self.oob_score:
+            self.oob_score_ = self.func[self.oob_score](y.iloc[self.oob_preds.index], self.oob_preds)
+
+        for column in X:
+            self.fi[column] = sum([tree.fi.get(column, 0) for tree in self.forest])
+
+    def predict(self, X: pd.DataFrame):
+        return pd.DataFrame([tree.predict(X) for tree in self.forest]).mean(axis = 0)
+    
+    def MAE(self, y: pd.Series, y_pred: pd.Series):
+        return (y - y_pred).abs().mean()
+    
+    def MSE(self, y: pd.Series, y_pred: pd.Series):
+        return ((y - y_pred) ** 2).mean()
+    
+    def RMSE(self, y: pd.Series, y_pred: pd.Series):
+        return (((y - y_pred) ** 2).mean()) ** (1 / 2)
+    
+    def MAPE(self, y: pd.Series, y_pred: pd.Series):
+        return ((y - y_pred) / y).abs().mean() * 100
+    
+    def R2(self, y: pd.Series, y_pred: pd.Series):
+        return 1 - ((y - y_pred) ** 2).sum() / ((y - y.mean()) ** 2).sum()
+
+X, y = make_regression(n_samples = 150, n_features = 14, n_informative = 10, noise = 15, random_state = 42)
+X = pd.DataFrame(X).round(2)
+y = pd.Series(y)
+X.columns = [f'col_{col}' for col in X.columns]
+#test = X.sample(20, random_state = 42)
+    
+d = {"n_estimators": 10, "max_depth": 5, "max_samples": 0.9, "max_leafs": 15, "random_state": 42, "oob_score": "mae"}
+a = MyForestReg(**d)
+#print(a)
+#print(X)
+
+start = time.time()
+
+a.fit(X, y)
+
+end = time.time()
+
+print(end - start)
+
+#print(a.leafs_cnt)
+#print(a.predict(X))
+#print([tree.fi for tree in a.forest])
+#print(a.fi)
 #print(y)
-#a.fit(X, y)
-#a.print_tree()
-#print(a.leafs_cnt)
-#print(a.predict(X).sum())
-#print(a.fi)
-#a.fit(X, y)
-#a.print_tree()
-#print(a.leafs_cnt)
-#print(a.tree.proba_sum())
-#print(a.fi)
-
-d = [{
-    'max_depth': 1,
-    'min_samples_split': 1,
-    'max_leafs': 2,
-    'bins': 8
-    },
-    {
-    'max_depth': 3,
-    'min_samples_split': 2,
-    'max_leafs': 5,
-    'bins': None
-    },
-    {
-    'max_depth': 5,
-    'min_samples_split': 100,
-    'max_leafs': 10,
-    'bins': 4
-    },
-    {
-    'max_depth': 4,
-    'min_samples_split': 50,
-    'max_leafs': 17,
-    'bins': 16
-    },
-    {
-    'max_depth': 10,
-    'min_samples_split': 40,
-    'max_leafs': 21,
-    'bins': 10
-    },
-    {
-    'max_depth': 15,
-    'min_samples_split': 35,
-    'max_leafs': 30,
-    'bins': 6
-    },
-]
-
-from sklearn.datasets import load_diabetes
-
-data = load_diabetes(as_frame=True)
-X, y = data['data'], data['target']
-
-for i in d:
-    a = MyTreeReg(**i)
-    a.fit(X, y)
-    #a.print_tree()
-    print(a.leafs_cnt)
-    print(a.tree.proba_sum())
+#print(a.oob_preds)
+print(a.oob_score_) 
