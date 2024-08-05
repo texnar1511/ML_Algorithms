@@ -81,12 +81,9 @@ class MyTreeReg():
         return ((classes - classes.mean()) ** 2).mean()
     
     def MSEGain(self, X: pd.DataFrame, y: pd.Series, column: str, split: float):
-        M0 = self.MSE(y)
         left = y[X[column] <= split]
         right = y[X[column] > split]
-        M1 = self.MSE(left)
-        M2 = self.MSE(right)
-        return M0 - (len(left) * M1 + len(right) * M2) / len(y)
+        return self.MSE(y) - (len(left) * self.MSE(left) + len(right) * self.MSE(right)) / len(y)
 
     def FeatureImportance(self, X: pd.DataFrame, y: pd.Series, column: str, split: float):
         return self.MSEGain(X, y, column, split) * len(y) / self.total_samples
@@ -96,11 +93,17 @@ class MyTreeReg():
         col_name = ''
         split_value = 0.0
         for column in X:
-            splits = pd.Series()
             if self.bins:
                 splits = self.hist[column]
             else:
-                splits = np.convolve(np.sort(X[column].unique()), [0.5, 0.5], 'valid')
+                #start = time.time()
+                #splits = np.convolve(np.sort(X[column].unique()), [0.5, 0.5], 'valid')
+                #end = time.time()
+                #print(end - start)
+                ssu = np.sort(np.unique(X[column]))
+                #print(X[column])
+                #print(native)
+                native = (ssu[1:] + ssu[:-1]) / 2
             for split in splits:
                 tmp_ig = self.MSEGain(X, y, column, split) 
                 if tmp_ig > ig:
@@ -112,15 +115,16 @@ class MyTreeReg():
     def splits_count(self, X: pd.DataFrame) -> int:
         ans = 0
         for column in X:
-            ans += len(self.hist[column][(self.hist[column] >= X[column].min()) & (self.hist[column] <= X[column].max())])
+            #print(self.hist[column])
+            #print((self.hist[column] >= X[column].min()) & (self.hist[column] <= X[column].max()))
+            ans += len(self.hist[column][(self.hist[column] > X[column].min()) & (self.hist[column] < X[column].max())])
         return ans
     
     def growth_tree(self, X: pd.DataFrame, y: pd.Series, depth: int, future_leafs: int) -> Tree:
-        node = Tree()
         if (len(y.unique()) == 1 or 
             depth >= self.max_depth or 
             len(y) < self.min_samples_split or 
-            self.leafs_cnt + future_leafs >= self.max_leafs - 1 or 
+            self.leafs_cnt + future_leafs - self.max_leafs + 1 >= 0 or 
             (self.bins and self.splits_count(X) == 0)
             ):
             node = Tree(kind = 'leaf', proba = y.mean(), samples = len(y))
@@ -139,13 +143,18 @@ class MyTreeReg():
         return node
     
     def fit(self, X: pd.DataFrame, y: pd.Series) -> None:
+        #self.total_samples = len(X)
         for column in X:
             self.fi[column] = 0
-        self.hist = pd.DataFrame()
         if self.bins:
             h = {}
             for column in X:
-                native = np.convolve(np.sort(X[column].unique()), [0.5, 0.5], 'valid')
+                #native = np.convolve(np.sort(np.unique(X[column])), [0.5, 0.5], 'valid')
+                #print(type(X[column]))
+                su = np.sort(np.unique(X[column]))
+                #print(X[column])
+                #print(native)
+                native = (su[1:] + su[:-1]) / 2
                 if native.shape[0] <= self.bins - 1:
                     h[column] = native
                 else:
@@ -165,18 +174,17 @@ class MyForestReg():
     def __init__(self, 
                  n_estimators = 10, 
                  max_features = 0.5, 
-                 max_samples = 0.5,
-                 oob_score = None, 
+                 max_samples = 0.5, 
                  max_depth = 5,
                  min_samples_split = 2,
                  max_leafs = 20,
                  bins = 16,
-                 random_state = 42
+                 random_state = 42,
+                 oob_score = None
                  ):
         self.n_estimators = n_estimators
         self.max_features = max_features
         self.max_samples = max_samples
-        self.oob_score = oob_score #mae, mse, rmse, mape, r2
         self.max_depth = max_depth
         self.min_samples_split = min_samples_split
         self.max_leafs = max_leafs
@@ -185,60 +193,15 @@ class MyForestReg():
         self.leafs_cnt = 0
         self.forest: list[MyTreeReg] = []
         self.fi = {}
+        self.oob_score = oob_score
         self.oob_score_ = 0
-        self.func = {'mae': self.MAE, 'mse': self.MSE, 'rmse': self.RMSE, 'mape': self.MAPE, 'r2': self.R2}
-
+        self.metrics = {'mae': self.MAE, 'mse': self.MSE, 'rmse': self.RMSE, 'mape': self.MAPE, 'r2': self.R2}
 
     def __str__(self):
         ans = 'MyForestReg class:'
         for key in self.__dict__:
             ans += f' {key}={self.__dict__[key]},'
         return ans[:-1]
-    
-    def fit(self, X: pd.DataFrame, y: pd.Series) -> None:
-        random.seed(self.random_state)
-        for column in X:
-            self.fi[column] = 0
-        self.oob_preds = []
-        n = round(X.shape[1] * self.max_features)
-        m = round(X.shape[0] * self.max_samples)
-        for i in range(self.n_estimators):
-            cols_idx = random.sample(list(X.columns), n)
-            rows_idx = random.sample(range(X.shape[0]), m)
-            X_s = X.loc[rows_idx, cols_idx]
-            y_s = y.loc[rows_idx]
-            tree = MyTreeReg(self.max_depth, self.min_samples_split, self.max_leafs, self.bins, X.shape[0])
-            tree.fit(X_s, y_s)
-            self.forest += [tree]
-            self.leafs_cnt += tree.leafs_cnt
-            rows_idx_oob = list(set(range(X.shape[0])) - set(rows_idx))#[i for i in range(X.shape[0]) if i not in rows_idx]
-            #print(rows_idx_oob)
-            X_s_oob = X.loc[rows_idx_oob, cols_idx]
-            pred_oob = tree.predict(X_s_oob)
-            #pred_oob = pd.Series(range(X_s_oob.shape[0]))
-            pred_oob.index = X_s_oob.index
-            #pred_oob = pred_oob.reindex(range(X.shape[0]))
-            #print(pred_oob)
-            self.oob_preds += [pred_oob]
-
-        #start = time.time()
-        self.oob_preds = pd.DataFrame(self.oob_preds).mean(axis = 0)
-        #end = time.time()
-        #print(end - start)
-        #print(self.oob_preds)
-        #self.oob_preds = self.oob_preds.mean(axis = 0)
-        #print(self.oob_preds)
-        #print(self.oob_preds.mean(axis = 0))
-        #print(y.iloc[self.oob_preds.index])
-
-        if self.oob_score:
-            self.oob_score_ = self.func[self.oob_score](y.iloc[self.oob_preds.index], self.oob_preds)
-
-        for column in X:
-            self.fi[column] = sum([tree.fi.get(column, 0) for tree in self.forest])
-
-    def predict(self, X: pd.DataFrame):
-        return pd.DataFrame([tree.predict(X) for tree in self.forest]).mean(axis = 0)
     
     def MAE(self, y: pd.Series, y_pred: pd.Series):
         return (y - y_pred).abs().mean()
@@ -254,6 +217,39 @@ class MyForestReg():
     
     def R2(self, y: pd.Series, y_pred: pd.Series):
         return 1 - ((y - y_pred) ** 2).sum() / ((y - y.mean()) ** 2).sum()
+    
+    def fit(self, X: pd.DataFrame, y: pd.Series) -> None:
+        random.seed(self.random_state)
+        for column in X:
+            self.fi[column] = 0
+        preds_oob = []
+        for i in range(self.n_estimators):
+            cols_idx = random.sample(list(X.columns), round(X.shape[1] * self.max_features))
+            rows_idx = random.sample(range(X.shape[0]), round(X.shape[0] * self.max_samples))
+            X_s = X.loc[rows_idx, cols_idx]
+            y_s = y.loc[rows_idx]
+            tree = MyTreeReg(self.max_depth, self.min_samples_split, self.max_leafs, self.bins, len(X))
+            #start = time.time()
+            tree.fit(X_s, y_s)
+            #end = time.time()
+            #print(end - start)
+            self.forest += [tree]
+            self.leafs_cnt += tree.leafs_cnt
+            rows_idx_oob = list(set(range(X.shape[0])) - set(rows_idx))
+            #print(rows_idx)
+            #print(rows_idx_oob)
+            X_s_oob = X.loc[rows_idx_oob, cols_idx]
+            pred_oob = tree.predict(X_s_oob)
+            pred_oob.index = X_s_oob.index
+            preds_oob += [pred_oob]
+        for column in X:
+            self.fi[column] = sum([tree.fi.get(column, 0) for tree in self.forest])
+        preds_oob = pd.DataFrame(preds_oob).mean(axis = 0)
+        if self.oob_score:
+            self.oob_score_ = self.metrics[self.oob_score](y.iloc[preds_oob.index], preds_oob)
+
+    def predict(self, X: pd.DataFrame):
+        return pd.DataFrame([tree.predict(X) for tree in self.forest]).mean(axis = 0)
 
 X, y = make_regression(n_samples = 150, n_features = 14, n_informative = 10, noise = 15, random_state = 42)
 X = pd.DataFrame(X).round(2)
