@@ -141,6 +141,7 @@ class MyLogReg:
     def ROC_AUC(self, y: pd.Series, y_pred_proba: pd.Series):
         y_pred_proba = y_pred_proba.round(10)
         df = pd.concat([y_pred_proba, y], axis = 1)
+        df.columns = [0, 1]
         df = df.sort_values([0, 1], ascending = [False, False]).reset_index()
         roc_auc = 0.0
         for i in df.index:

@@ -20,7 +20,7 @@ class MyPCA():
         W_pca = eigh[1].T[::-1][:self.n_components]
         return np.dot(X, W_pca.T)
 
-X, y = make_classification(n_samples = 11, n_features = 5, n_informative = 2, random_state = 42)
+X, y = make_classification(n_samples = 150, n_features = 5, n_informative = 2, random_state = 42)
 X = pd.DataFrame(X)
 y = pd.Series(y)
 X.columns = [f'col_{col}' for col in X.columns]

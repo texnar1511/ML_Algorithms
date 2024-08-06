@@ -3,6 +3,8 @@ import pandas as pd
 from sklearn.datasets import make_regression
 import random
 import time
+import multiprocessing as mp
+from typing import Tuple
 
 class Tree():
     
@@ -163,7 +165,7 @@ class MyTreeReg():
             self.hist = h
         self.tree = self.growth_tree(X, y, 0, 0)
 
-    def predict(self, X: pd.DataFrame):
+    def predict(self, X: pd.DataFrame) -> pd.Series:
         ans = []
         for index, row in X.iterrows():
             ans += [self.tree.traversal(row)]
@@ -180,7 +182,8 @@ class MyForestReg():
                  max_leafs = 20,
                  bins = 16,
                  random_state = 42,
-                 oob_score = None
+                 oob_score = None,
+                 parallel_train = False
                  ):
         self.n_estimators = n_estimators
         self.max_features = max_features
@@ -196,6 +199,7 @@ class MyForestReg():
         self.oob_score = oob_score
         self.oob_score_ = 0
         self.metrics = {'mae': self.MAE, 'mse': self.MSE, 'rmse': self.RMSE, 'mape': self.MAPE, 'r2': self.R2}
+        self.parallel_train = parallel_train
 
     def __str__(self):
         ans = 'MyForestReg class:'
@@ -218,30 +222,46 @@ class MyForestReg():
     def R2(self, y: pd.Series, y_pred: pd.Series):
         return 1 - ((y - y_pred) ** 2).sum() / ((y - y.mean()) ** 2).sum()
     
+    def loop_iter(self, Xy: Tuple[pd.DataFrame, pd.Series]) -> pd.Series:
+        X, y = Xy
+        cols_idx = random.sample(list(X.columns), round(X.shape[1] * self.max_features))
+        rows_idx = random.sample(range(X.shape[0]), round(X.shape[0] * self.max_samples))
+        X_s = X.loc[rows_idx, cols_idx]
+        y_s = y.loc[rows_idx]
+        tree = MyTreeReg(self.max_depth, self.min_samples_split, self.max_leafs, self.bins, len(X))
+        tree.fit(X_s, y_s)
+        self.forest += [tree]
+        self.leafs_cnt += tree.leafs_cnt
+        rows_idx_oob = list(set(range(X.shape[0])) - set(rows_idx))
+        X_s_oob = X.loc[rows_idx_oob, cols_idx]
+        pred_oob = tree.predict(X_s_oob)
+        pred_oob.index = X_s_oob.index
+        #preds_oob += [pred_oob]
+        return pred_oob
+
     def fit(self, X: pd.DataFrame, y: pd.Series) -> None:
         random.seed(self.random_state)
         for column in X:
             self.fi[column] = 0
         preds_oob = []
-        for i in range(self.n_estimators):
-            cols_idx = random.sample(list(X.columns), round(X.shape[1] * self.max_features))
-            rows_idx = random.sample(range(X.shape[0]), round(X.shape[0] * self.max_samples))
-            X_s = X.loc[rows_idx, cols_idx]
-            y_s = y.loc[rows_idx]
-            tree = MyTreeReg(self.max_depth, self.min_samples_split, self.max_leafs, self.bins, len(X))
-            #start = time.time()
-            tree.fit(X_s, y_s)
-            #end = time.time()
-            #print(end - start)
-            self.forest += [tree]
-            self.leafs_cnt += tree.leafs_cnt
-            rows_idx_oob = list(set(range(X.shape[0])) - set(rows_idx))
-            #print(rows_idx)
-            #print(rows_idx_oob)
-            X_s_oob = X.loc[rows_idx_oob, cols_idx]
-            pred_oob = tree.predict(X_s_oob)
-            pred_oob.index = X_s_oob.index
-            preds_oob += [pred_oob]
+        if self.parallel_train:
+            pool = mp.Pool(mp.cpu_count())
+            pred_oob = pool.map(self.loop_iter, [(X, y)] * self.n_estimators)
+        else:
+            for i in range(self.n_estimators):
+                cols_idx = random.sample(list(X.columns), round(X.shape[1] * self.max_features))
+                rows_idx = random.sample(range(X.shape[0]), round(X.shape[0] * self.max_samples))
+                X_s = X.loc[rows_idx, cols_idx]
+                y_s = y.loc[rows_idx]
+                tree = MyTreeReg(self.max_depth, self.min_samples_split, self.max_leafs, self.bins, len(X))
+                tree.fit(X_s, y_s)
+                self.forest += [tree]
+                self.leafs_cnt += tree.leafs_cnt
+                rows_idx_oob = list(set(range(X.shape[0])) - set(rows_idx))
+                X_s_oob = X.loc[rows_idx_oob, cols_idx]
+                pred_oob = tree.predict(X_s_oob)
+                pred_oob.index = X_s_oob.index
+                preds_oob += [pred_oob]
         for column in X:
             self.fi[column] = sum([tree.fi.get(column, 0) for tree in self.forest])
         preds_oob = pd.DataFrame(preds_oob).mean(axis = 0)
@@ -257,7 +277,7 @@ y = pd.Series(y)
 X.columns = [f'col_{col}' for col in X.columns]
 #test = X.sample(20, random_state = 42)
     
-d = {"n_estimators": 10, "max_depth": 5, "max_samples": 0.9, "max_leafs": 15, "random_state": 42, "oob_score": "mae"}
+d = {"parallel_train": True, "n_estimators": 10, "max_depth": 5, "max_samples": 0.9, "max_leafs": 15, "random_state": 42, "oob_score": "mae"}
 a = MyForestReg(**d)
 #print(a)
 #print(X)

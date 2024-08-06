@@ -1,6 +1,7 @@
-import pandas as pd
-from sklearn.datasets import make_classification
 import numpy as np
+import pandas as pd
+import random
+import sklearn.metrics as metrics
 
 class Tree():
     
@@ -52,7 +53,7 @@ class MyTreeClf():
         Decision tree classification
     '''
 
-    def __init__(self, max_depth = 5, min_samples_split = 2, max_leafs = 20, bins = None, criterion = 'entropy'):
+    def __init__(self, max_depth = 5, min_samples_split = 2, max_leafs = 20, bins = None, criterion = 'entropy', total_samples = 1):
         self.max_depth = max_depth
         self.min_samples_split = min_samples_split
         self.max_leafs = max(2, max_leafs)
@@ -61,7 +62,7 @@ class MyTreeClf():
         self.tree = Tree()
         self.bins = bins
         self.criterion = criterion
-        self.total_samples = 0
+        self.total_samples = total_samples
         self.fi = {}
 
     def __str__(self):
@@ -138,7 +139,7 @@ class MyTreeClf():
             self.leafs_cnt + future_leafs >= self.max_leafs - 1 or 
             (self.bins and self.splits_count(X) == 0)
             ):
-            node = Tree(kind = 'leaf', proba = y.sum() / len(y), samples = len(y))
+            node = Tree(kind = 'leaf', proba = y.mean(), samples = len(y))
             self.leafs_cnt += 1
         else:
             node = Tree(*self.get_best_split(X, y), samples = len(y))
@@ -154,7 +155,7 @@ class MyTreeClf():
         return node
     
     def fit(self, X: pd.DataFrame, y: pd.Series):
-        self.total_samples = len(X)
+        #self.total_samples = len(X)
         for column in X:
             self.fi[column] = 0
         self.hist = pd.DataFrame()
@@ -170,7 +171,7 @@ class MyTreeClf():
             self.hist = h
         self.tree = self.growth_tree(X, y, 0, 0)
 
-    def predict(self, X: pd.DataFrame):
+    def predict(self, X: pd.DataFrame) -> pd.Series:
         ans = []
         for index, row in X.iterrows():
             ans += [self.tree.traversal(row)]
@@ -181,110 +182,118 @@ class MyTreeClf():
         for index, row in X.iterrows():
             ans += [self.tree.traversal(row)]
         return pd.Series(ans)
+
+class MyForestClf():
+
+    def __init__(self, 
+                 n_estimators = 10, 
+                 max_features = 0.5, 
+                 max_samples = 0.5, 
+                 max_depth = 5,
+                 min_samples_split = 2,
+                 max_leafs = 20,
+                 bins = 16,
+                 criterion = 'entropy',
+                 oob_score = None,
+                 random_state = 42
+                 ):
+        self.n_estimators = n_estimators
+        self.max_features = max_features
+        self.max_samples = max_samples
+        self.max_depth = max_depth
+        self.min_samples_split = min_samples_split
+        self.max_leafs = max_leafs
+        self.bins = bins
+        self.criterion = criterion
+        self.random_state = random_state
+        self.leafs_cnt = 0
+        self.forest: list[MyTreeClf] = []
+        self.fi = {}
+        self.oob_score = oob_score
+        self.oob_score_ = 0
+        self.metrics = {'accuracy': self.Accuracy, 'precision': self.Precision, 'recall': self.Recall, 'f1': self.F1, 'roc_auc': self.ROC_AUC}
+
+
+    def __str__(self):
+        ans = 'MyForestClf class:'
+        for key in self.__dict__:
+            ans += f' {key}={self.__dict__[key]},'
+        return ans[:-1]
     
+    def Accuracy(self, y: pd.Series, y_pred: pd.Series):
+        return (y == y_pred).mean()
+    
+    def Precision(self, y: pd.Series, y_pred: pd.Series):
+        return (y * y_pred).sum() / y_pred.sum()
+    
+    def Recall(self, y: pd.Series, y_pred: pd.Series):
+        return (y * y_pred).sum() / y.sum()
+    
+    def F1(self, y: pd.Series, y_pred: pd.Series):
+        return 2 * (y * y_pred).sum() / (y.sum() + y_pred.sum())
+    
+    def ROC_AUC(self, y: pd.Series, y_pred_proba: pd.Series):
+        y_pred_proba = y_pred_proba.round(10)#.reset_index(drop = True)
+        #y = y.reset_index(drop = True)
+        #print(y)
+        #print(y_pred_proba)
+        df = pd.concat([y_pred_proba, y], axis = 1)
+        df.columns = [0, 1]
+        #print(df)
+        #print(df.columns)
+        df = df.sort_values([0, 1], ascending = [False, False]).reset_index()
+        roc_auc = 0.0
+        for i in df.index:
+            if df.iloc[i, 2] == 0:
+                roc_auc += df.iloc[:i, 2][df.iloc[:i, 1] > df.iloc[i, 1]].sum()
+                roc_auc += df.iloc[:i, 2][df.iloc[:i, 1] == df.iloc[i, 1]].sum() / 2
+        s = y.sum()
+        return roc_auc / s / (len(y) - s)
+    
+    def fit(self, X: pd.DataFrame, y: pd.Series) -> None:
+        random.seed(self.random_state)
+        for column in X:
+            self.fi[column] = 0
+        preds_oob = []
+        for i in range(self.n_estimators):
+            cols_idx = random.sample(list(X.columns), round(X.shape[1] * self.max_features))
+            rows_idx = random.sample(range(X.shape[0]), round(X.shape[0] * self.max_samples))
+            X_s = X.loc[rows_idx, cols_idx]
+            y_s = y.loc[rows_idx]
+            tree = MyTreeClf(self.max_depth, self.min_samples_split, self.max_leafs, self.bins, self.criterion, len(X))
+            tree.fit(X_s, y_s)
+            self.forest += [tree]
+            self.leafs_cnt += tree.leafs_cnt
+            rows_idx_oob = list(set(range(X.shape[0])) - set(rows_idx))
+            X_s_oob = X.loc[rows_idx_oob, cols_idx]
+            pred_oob = tree.predict_proba(X_s_oob)
+            pred_oob.index = X_s_oob.index
+            preds_oob += [pred_oob]
+        for column in X:
+            self.fi[column] = sum([tree.fi.get(column, 0) for tree in self.forest])
+        preds_oob = pd.DataFrame(preds_oob).mean(axis = 0)
+        #print(preds_oob)
+        #print(y.iloc[preds_oob.index])
+        #print(metrics.roc_auc_score(y.iloc[preds_oob.index], preds_oob))
+        if self.oob_score:
+            if self.oob_score != 'roc_auc':
+                preds_oob = (preds_oob > 0.5).astype(int)
+            self.oob_score_ = self.metrics[self.oob_score](y.iloc[preds_oob.index], preds_oob)
 
+    def predict(self, X: pd.DataFrame, type: str) -> pd.Series:
+        if type == 'vote':
+            return (pd.DataFrame([tree.predict(X) for tree in self.forest]).mean(axis = 0) >= 0.5).astype(int)
+        elif type == 'mean':
+            return (pd.DataFrame([tree.predict_proba(X) for tree in self.forest]).mean(axis = 0) > 0.5).astype(int)
+        
+    def predict_proba(self, X: pd.DataFrame) -> pd.Series:
+        return pd.DataFrame([tree.predict_proba(X) for tree in self.forest]).mean(axis = 0)
 
-
-#d = {
-#    'max_depth': 15,
-#    'min_samples_split': 20,
-#    'max_leafs': 30,
-#    'bins': 6
-#    }
-
-#X, y = make_classification(n_samples=150, n_features=5, n_informative=3, random_state=42)
-#X = pd.DataFrame(X).round(2)
-#y = pd.Series(y)
-#X.columns = [f'col_{col}' for col in X.columns]
-#test = X.sample(20, random_state=42)
-
-d = [{
-    'max_depth': 1,
-    'min_samples_split': 1,
-    'max_leafs': 2,
-    'bins': 8,
-    'criterion': 'entropy'
-    },
-    {
-    'max_depth': 3,
-    'min_samples_split': 2,
-    'max_leafs': 5,
-    'bins': None,
-    'criterion': 'entropy'
-    },
-    {
-    'max_depth': 5,
-    'min_samples_split': 200,
-    'max_leafs': 10,
-    'bins': 4,
-    'criterion': 'entropy'
-    },
-    {
-    'max_depth': 4,
-    'min_samples_split': 100,
-    'max_leafs': 17,
-    'bins': 16,
-    'criterion': 'entropy'
-    },
-    {
-    'max_depth': 10,
-    'min_samples_split': 40,
-    'max_leafs': 21,
-    'bins': 10,
-    'criterion': 'entropy'
-    },
-    {
-    'max_depth': 15,
-    'min_samples_split': 20,
-    'max_leafs': 30,
-    'bins': 6,
-    'criterion': 'entropy'
-    },
-]
-
-df = pd.read_csv('banknote+authentication.zip', header=None)
+df = pd.read_csv('banknote+authentication.zip', header = None)
 df.columns = ['variance', 'skewness', 'curtosis', 'entropy', 'target']
 X, y = df.iloc[:,:4], df['target']
 
-#X, y = make_classification(n_samples=150, n_features=5, n_informative=3, random_state=42)
-#X = pd.DataFrame(X).round(2)
-#y = pd.Series(y)
-#X.columns = [f'col_{col}' for col in X.columns]
-
-for i in d:
-    a = MyTreeClf(**i)
-    a.fit(X, y)
-    print(a.leafs_cnt)
-    print(a.tree.proba_sum())
-    
-
-#print(a.predict_proba(test).sum())
-#print(a.predict_proba(X).sum())
-#print(a.fi)
-
-#d = [{
-#    'max_depth': 8,
-#    'min_samples_split': 5,
-#    'max_leafs': 15,
-#    'bins': 10
-#    },
-#    {
-#    'max_depth': 5,
-#    'min_samples_split': 5,
-#    'max_leafs': 10,
-#    'bins': 15
-#    },
-#]
-#
-#X, y = make_classification(n_samples=150, n_features=5, n_informative=3, random_state=42)
-#X = pd.DataFrame(X).round(2)
-#y = pd.Series(y)
-#X.columns = [f'col_{col}' for col in X.columns]
-#
-#for i in d:
-#    a = MyTreeClf(**i, criterion = 'entropy')
-#    a.fit(X, y)
-#    a.print_tree()
-#    print(a.leafs_cnt)
-#    print(a.tree.proba_sum())
-#
+a = MyForestClf(oob_score = 'accuracy')
+a.fit(X, y)
+print(a.oob_score_)
+#print(a.predict_proba(X))
