@@ -20,8 +20,8 @@ class MyKMeans():
     
     def fill_missing_rows(self, new_centers: pd.DataFrame, centers: pd.DataFrame) -> pd.DataFrame:
         for i in set(centers.index) - set(new_centers.index):
-            new_centers.loc[i] = centers.loc[i]
-        return new_centers
+            new_centers.loc[i] = np.array(centers.loc[i])
+        return new_centers.sort_index()
 
     
     def fit_clusters(self, X: pd.DataFrame) -> pd.DataFrame:
@@ -29,7 +29,7 @@ class MyKMeans():
         for i in range(self.max_iter):
             distances = cdist(X, centers)
             new_centers = X.groupby(distances.argmin(axis = 1)).mean()
-            #new_centers = self.fill_missing_rows(new_centers, centers)
+            new_centers = self.fill_missing_rows(new_centers, centers)
             if (((new_centers - centers) ** 2).sum(axis = 1) ** (1 / 2)).sum() < self.eps:
                 return new_centers
             centers = new_centers
@@ -60,18 +60,19 @@ class MyKMeans():
 
 from sklearn.datasets import make_blobs
 
-X, y = make_blobs(n_samples = 10, centers = 3, n_features = 2, random_state = 0)
+X, y = make_blobs(n_samples = 10, centers = 4, n_features = 3, random_state = 0)
 
 X = pd.DataFrame(X)
+X.columns = [f'col_{i}' for i in X.columns]
 print(X)
 
-a = MyKMeans(3, 10, 3)
-a.fit(X)
-print(a.inertia_)
-print(np.sum(a.cluster_centers_))
-print(np.array(a.cluster_centers_))
-print(a.predict(X))
-print(y)
+a = MyKMeans(4)
+print(a.fit_clusters(X))
+#print(a.inertia_)
+#print(np.sum(a.cluster_centers_))
+#print(np.array(a.cluster_centers_))
+#print(a.predict(X))
+#print(y)
 
 #plt.scatter(X.loc[:, 0], X.loc[:, 1], c = y)
 #plt.scatter(np.array(a.cluster_centers_)[:, 0], np.array(a.cluster_centers_)[:, 1], c = 'orange')
