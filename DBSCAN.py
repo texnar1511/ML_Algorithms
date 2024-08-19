@@ -34,7 +34,7 @@ class MyDBSCAN():
         outliers = []
         clusters = {-1: []}
         for index, row in X.iterrows():
-            if index not in cores and index not in borders and index not in outliers:
+            if index not in cores and index not in borders and index not in outliers and index not in [x for xs in clusters.values() for x in xs]:
                 distances = self._metrics[self.metric](X, row)
                 neighbors_mask = distances < self.eps
                 if neighbors_mask.sum() >= self.min_samples + 1:
@@ -42,8 +42,9 @@ class MyDBSCAN():
                     cluster_idx = max(clusters.keys()) + 1
                     clusters[cluster_idx] = [index]
                     queue = [(id, it) for id, it in X[neighbors_mask].iterrows() if id not in cores and id not in borders]
-                    while queue:
-                        idx, item = queue.pop(0)
+                    queue_iter = 0
+                    while queue_iter < len(queue):
+                        idx, item = queue[queue_iter]
                         item_dist = self._metrics[self.metric](X, item)
                         item_mask = item_dist < self.eps
                         if idx in outliers or item_mask.sum() < self.min_samples + 1:
@@ -54,6 +55,7 @@ class MyDBSCAN():
                             cores += [idx]
                             clusters[cluster_idx] += [idx]
                             queue += [(id, it) for id, it in X[item_mask].iterrows() if id not in cores and id not in borders and id not in [ides for ides, itemes in queue]]
+                        queue_iter += 1
                 else:
                     outliers += [index]
         clusters[-1] = outliers
@@ -65,11 +67,15 @@ class MyDBSCAN():
 
 with open('ML_Algorithms/test.npy', 'rb') as f:
     a = np.load(f)
+    
+from sklearn.datasets import make_blobs    
+    
+a, _ = make_blobs(n_samples = 1000, centers = 4, n_features = 2, cluster_std = 0.6, random_state = 0)
 
 X = pd.DataFrame(a)
 print(X.shape)
 
-clust = MyDBSCAN(0.3, 3, 'euclidean')
+clust = MyDBSCAN(1, 10, 'euclidean')
 
 from collections import Counter
 
