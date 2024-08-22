@@ -1,6 +1,8 @@
 import numpy as np
 import pandas as pd
 from sklearn.datasets import make_regression
+from typing import Callable
+import random
 
 class Tree():
     
@@ -13,15 +15,17 @@ class Tree():
             right = None, 
             kind: str = 'node', 
             proba: float = 0.0, 
-            samples: int = 0):
-        self.column = column
-        self.split = split
-        self.ig = ig
+            samples: int = 0,
+            targets: pd.Series = None):
+        self.column: str = column
+        self.split: float = split
+        self.ig: float = ig
         self.left: Tree = left
         self.right: Tree = right
-        self.kind = kind
-        self.proba = proba
-        self.samples = samples
+        self.kind: str = kind
+        self.proba: float = proba
+        self.samples: int = samples
+        self.targets: pd.Series = targets
     
     def __str__(self, prefix = '', count = 0, addition = True, end = True, width = 7):
         root = f'{self.column} > {self.split} | samples = {self.samples}' if self.kind == 'node' else f'leaf_{"left" if addition else "right"} = {self.proba} | samples = {self.samples}' if self.kind == 'leaf' else ''
@@ -46,6 +50,24 @@ class Tree():
             node = node.left if row[node.column] <= node.split else node.right
         return node.proba
 
+    def bypass(self):
+        node = self
+        if node.kind == 'leaf':
+            print(node.proba)
+        else:
+            node.left.bypass()
+            node.right.bypass()
+            
+    def change_probas(self, y_true: pd.Series, y_pred: pd.Series, loss: str, leafs_reg: float) -> None:
+        node = self
+        if node.kind == 'leaf':
+            ans = (node.targets + y_true - y_pred).dropna() - node.targets
+            node.proba = ans.mean() if loss == 'MSE' else ans.median()
+            node.proba += leafs_reg
+        else:
+            node.left.change_probas(y_true, y_pred, loss, leafs_reg)
+            node.right.change_probas(y_true, y_pred, loss, leafs_reg)
+        
 class MyTreeReg():
     '''
         Decision tree regression
@@ -117,7 +139,7 @@ class MyTreeReg():
             self.leafs_cnt + future_leafs - self.max_leafs + 1 >= 0 or 
             (self.bins and self.splits_count(X) == 0)
             ):
-            node = Tree(kind = 'leaf', proba = y.mean(), samples = len(y))
+            node = Tree(kind = 'leaf', proba = y.mean(), samples = len(y), targets = y)
             self.leafs_cnt += 1
         else:
             node = Tree(*self.get_best_split(X, y), samples = len(y))
@@ -152,7 +174,19 @@ class MyTreeReg():
 
 class MyBoostReg():
     
-    def __init__(self, n_estimators: int = 10, learning_rate: float = 0.1, max_depth: int = 5, min_samples_split: int = 2, max_leafs: int = 20, bins: int = 16, loss: str = 'MSE') -> None:
+    def __init__(self, n_estimators: int = 10, 
+                 learning_rate: float = 0.1, 
+                 max_depth: int = 5, 
+                 min_samples_split: int = 2, 
+                 max_leafs: int = 20, 
+                 bins: int = 16, 
+                 loss: str = 'MSE', 
+                 metric: str = None, 
+                 max_features: float = 0.5, 
+                 max_samples: float = 0.5, 
+                 reg: float = 0.1,
+                 random_state = 42
+                 ) -> None:
         self.n_estimators: int = n_estimators
         self.learning_rate: float = learning_rate
         self.max_depth: int = max_depth
@@ -162,6 +196,14 @@ class MyBoostReg():
         self.loss: str = loss
         self.pred_0: float = 0.0
         self.trees: list[MyTreeReg] = []
+        self._metrics: dict[str, Callable[[pd.Series, pd.Series], float]] = {'MSE': self.MSEMetric, 'MAE': self.MAEMetric, 'RMSE': self.RMSEMetric, 'R2': self.R2Metric, 'MAPE': self.MAPEMetric}
+        self.metric = self._metrics.get(metric, metric)
+        self.best_score = float('inf')
+        self.max_features = max_features
+        self.max_samples = max_samples
+        self.reg = reg
+        self.fi = {}
+        self.random_state = random_state
         
     def __str__(self) -> str:
         ans = 'MyBoostReg class:'
@@ -169,32 +211,98 @@ class MyBoostReg():
             ans += f' {key}={self.__dict__[key]},'
         return ans[:-1] 
     
-    def fit(self, X: pd.DataFrame, y: pd.Series) -> None:
-        self.pred_0 = y.mean()
+    def MSELoss(self, y_pred: pd.Series, y_true: pd.Series) -> pd.Series:
+        return ((y_pred - y_true) ** 2).dropna()
+    
+    def MSEGradient(self, y_pred: pd.Series, y_true: pd.Series) -> pd.Series:
+        return ((y_pred - y_true) * 2).dropna()
+    
+    def MAELoss(self, y_pred: pd.Series, y_true: pd.Series) -> pd.Series:
+        return ((y_pred - y_true).abs()).dropna()
+    
+    def MAEGradient(self, y_pred: pd.Series, y_true: pd.Series) -> pd.Series:
+        return pd.Series(np.sign(y_pred - y_true)).dropna()
+    
+    def MSEMetric(self, y_pred: pd.Series, y_true: pd.Series) -> float:
+        return ((y_pred - y_true) ** 2).mean()
+    
+    def MAEMetric(self, y_pred: pd.Series, y_true: pd.Series) -> float:
+        return (y_pred - y_true).abs().mean()
+    
+    def RMSEMetric(self, y_pred: pd.Series, y_true: pd.Series) -> float:
+        return ((y_pred - y_true) ** 2).mean() ** 0.5
+    
+    def R2Metric(self, y_pred: pd.Series, y_true: pd.Series) -> float:
+        return 1 - ((y_pred - y_true) ** 2).sum() / ((y_true.mean() - y_true) ** 2).sum()
+    
+    def MAPEMetric(self, y_pred: pd.Series, y_true: pd.Series) -> float:
+        return (1 - y_pred / y_true).abs().mean() * 100
+    
+    def Stopping(self, scores, count):
+        return len([i for i in scores[-count:] if i >= scores[-count - 1]]) == count if len(scores) >= count + 1 else False 
+            
+            
+    
+    def fit(self, X: pd.DataFrame, y: pd.Series, X_eval: pd.DataFrame = None, y_eval: pd.Series = None, early_stopping: int = None, verbose: int = None) -> None:
+        for column in X:
+            self.fi[column] = 0.0
+        random.seed(self.random_state)
+        self.pred_0 = y.mean() if self.loss == 'MSE' else y.median()    
         F = self.pred_0
-        for i in range(self.n_estimators):
-            r = y - F
-            tree_reg = MyTreeReg(self.max_depth, self.min_samples_split, self.max_leafs, self.bins)
-            tree_reg.fit(X, r)
+        scores = []
+        for i in range(1, self.n_estimators + 1):
+            cols_idx = random.sample(list(X.columns), round(X.shape[1] * self.max_features))
+            rows_idx = random.sample(range(X.shape[0]),  round(X.shape[0] * self.max_samples))
+            X_s = X[cols_idx].iloc[rows_idx]
+            y_s = y.iloc[rows_idx]
+            gradient = self.MSEGradient(F, y_s) if self.loss == 'MSE' else self.MAEGradient(F, y_s)
+            tree_reg = MyTreeReg(self.max_depth, self.min_samples_split, self.max_leafs, self.bins, len(X))
+            tree_reg.fit(X_s, -gradient)
+            tree_reg.tree.change_probas(y_s, F, self.loss, self.reg * sum([tree.leafs_cnt for tree in self.trees]))
+            for k, v in tree_reg.fi.items():
+                self.fi[k] += v
             self.trees += [tree_reg]
-            F += self.learning_rate * tree_reg.predict(X)
+            loss_value = self.MSELoss(F, y_s) if self.loss == 'MSE' else self.MAELoss(F, y_s)
+            self.best_score = loss_value.mean() if not self.metric else self.metric(tree_reg.predict(X), y)
+            if early_stopping is not None and X_eval is not None and y_eval is not None:
+                eval_loss = self.MSELoss(F, y_eval) if self.loss == 'MSE' else self.MAELoss(F, y_eval)
+                eval_score = eval_loss.mean() if not self.metric else self.metric(tree_reg.predict(X_eval), y_eval)
+                scores += [eval_score]
+            if verbose and not i % verbose:
+                print(f'{i}. Loss[{self.loss}]: {loss_value.mean()}' + (f' | {self.metric.__name__[:-6]}: {self.best_score}' if self.metric else '') + (f' | eval: {eval_score}' if self.metric and early_stopping is not None and X_eval is not None and y_eval is not None else ''))
+            F += tree_reg.predict(X) * (self.learning_rate if not callable(self.learning_rate) else self.learning_rate(i))
+            print(scores)
+            print(self.Stopping(scores, early_stopping))
+            if self.Stopping(scores, early_stopping):
+                self.trees = self.trees[:-early_stopping]
+                self.best_score = scores[-early_stopping - 1]
+                break
+        else:
+            loss_value = self.MSELoss(F, y) if self.loss == 'MSE' else self.MAELoss(F, y)
+            self.best_score = loss_value.mean() if not self.metric else self.metric(self.predict(X), y)
             
     def predict(self, X: pd.DataFrame):
         ans = 0.0
-        for tree_reg in self.trees:
-            ans += tree_reg.predict(X)
-        return ans * self.learning_rate + self.pred_0
+        for i, tree_reg in enumerate(self.trees):
+            ans += tree_reg.predict(X) * (self.learning_rate if not callable(self.learning_rate) else self.learning_rate(i + 1))
+        return ans + self.pred_0
         
 X, y = make_regression(n_samples = 100, n_features = 4, n_informative = 10, noise = 15, random_state = 42)
 X = pd.DataFrame(X)
 y = pd.Series(y)
 X.columns = [f'col_{col}' for col in X.columns]
+
+X_eval, y_eval = make_regression(n_samples = 50, n_features = 4, n_informative = 10, noise = 15, random_state = 42)
+X_eval = pd.DataFrame(X_eval)
+y_eval = pd.Series(y_eval)
+X_eval.columns = [f'col_{col}' for col in X_eval.columns]
     
-a = MyBoostReg()
-a.fit(X, y)
+a = MyBoostReg(n_estimators = 20, loss = 'MAE', metric = 'MAPE')
+a.fit(X, y, X_eval, y_eval, early_stopping = 4, verbose = 3)
 print(a.pred_0)
-print(a.trees)
 print(a.predict(X).sum())
+print(a.best_score)
+print(a.fi)
 
         
     
