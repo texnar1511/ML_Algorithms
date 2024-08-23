@@ -18,56 +18,80 @@ class MyKMeans():
             ans += f'{key}={self.__dict__[key]}, '
         return ans[:-2]
     
-    def fill_missing_rows(self, new_centers: pd.DataFrame, centers: pd.DataFrame) -> pd.DataFrame:
-        for i in set(centers.index) - set(new_centers.index):
-            new_centers.loc[i] = np.array(centers.loc[i])
-        return new_centers.sort_index()
-
+    def Euclidean(self, x: pd.Series, y: pd.Series) -> float:
+        return ((x - y) ** 2).sum() ** 0.5
     
-    def fit_clusters(self, X: pd.DataFrame) -> pd.DataFrame:
-        centers = pd.DataFrame(np.random.uniform(X.min(axis = 0), X.max(axis = 0), (self.n_clusters, X.shape[1])))
-        for i in range(self.max_iter):
-            distances = cdist(X, centers)
-            new_centers = X.groupby(distances.argmin(axis = 1)).mean()
-            new_centers = self.fill_missing_rows(new_centers, centers)
-            if (((new_centers - centers) ** 2).sum(axis = 1) ** (1 / 2)).sum() < self.eps:
-                return new_centers
-            centers = new_centers
-        return centers
+    def check(self, centers, new_centers):
+        centers = np.array(centers)
+        new_centers = np.array(new_centers)
+        #print(centers)
+        #print(new_centers)
+        return (centers == new_centers).all()
     
-    def WCSS(self, X: pd.DataFrame, centers: pd.DataFrame):
-        distances = cdist(X, centers)
-        gb = X.groupby(distances.argmin(axis = 1))
-        wcss = []
-        for key, item in gb:
-            wcss += [((item - centers.loc[key]) ** 2).sum().sum()]
-        return sum(wcss)
-
+    def WCSS(self, X: pd.DataFrame, centers: list) -> float:
+        ans = 0.0
+        for index, row in X.iterrows():
+            ans += min([self.Euclidean(row, center) ** 2 for center in centers])
+        return ans
     
     def fit(self, X: pd.DataFrame):
-        np.random.seed(seed = self.random_state)
-        group_centers = []
-        group_wcss = []
-        for i in range(self.n_init):
-            group_centers += [self.fit_clusters(X)]
-            group_wcss += [self.WCSS(X, group_centers[i])]
-        self.inertia_ = min(group_wcss)
-        self.cluster_centers_ = group_centers[np.argmin(group_wcss)].values.tolist()
-
-    def predict(self, X: pd.DataFrame):
-        return cdist(X, self.cluster_centers_).argmin(axis = 1)
+        np.random.seed(self.random_state)
+        centroids = []
+        for it in range(self.n_init):
+            centers = []
+            for i in range(self.n_clusters):
+                center = []
+                for j in X.columns:
+                    center += [np.random.uniform(X[j].min(), X[j].max())]
+                centers += [center]
+            ii = 0
+            while ii < self.max_iter:
+                clusters = {}
+                for i in range(self.n_clusters):
+                    clusters[i] = []
+                for index, row in X.iterrows():
+                    clusters[np.argmin([self.Euclidean(row, center) for center in centers])] += [index]
+                new_centers = [-1] * self.n_clusters
+                for k, v in clusters.items():
+                    if v:
+                        new_centers[k] = X.iloc[v].mean(axis = 0).tolist()
+                    else:
+                        new_centers[k] = centers[k]
+                if self.check(centers, new_centers):
+                    centers = new_centers
+                    break
+                centers = new_centers
+                ii += 1
+            centroids += [centers]
+        wcss = [self.WCSS(X, centers) for centers in centroids]
+        self.cluster_centers_ = centroids[np.argmin(wcss)]
+        self.inertia_ = np.min(wcss)
+        
+    def predict(self, X: pd.DataFrame) -> list:
+        ans = []
+        for index, row in X.iterrows():
+            ans += [np.argmin([self.Euclidean(row, center) for center in self.cluster_centers_])]
+        return ans
+        
             
 
 from sklearn.datasets import make_blobs
 
-X, y = make_blobs(n_samples = 10, centers = 4, n_features = 3, random_state = 0)
+X, y = make_blobs(n_samples = 100, centers = 3, n_features = 2, random_state = 0)
 
 X = pd.DataFrame(X)
 X.columns = [f'col_{i}' for i in X.columns]
-print(X)
+#print(X)
 
-a = MyKMeans(4)
-print(a.fit_clusters(X))
+#with open('ML_Algorithms/test.npy', 'rb') as f:
+#    X = np.load(f)
+    
+#X = pd.DataFrame(X)
+#X.columns = [f'col_{i}' for i in X.columns]
+
+a = MyKMeans(3)
+print(a.fit(X))
+print(a.predict(X))
 #print(a.inertia_)
 #print(np.sum(a.cluster_centers_))
 #print(np.array(a.cluster_centers_))
