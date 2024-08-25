@@ -1,11 +1,16 @@
+import numpy as np
 import pandas as pd
 from sklearn.datasets import make_regression
 import random
+
+pd.set_option('display.max_rows', None)
 
 X, y = make_regression(n_samples=1000, n_features=14, n_informative=10, noise=15, random_state=42)
 X = pd.DataFrame(X)
 y = pd.Series(y)
 X.columns = [f'col_{col}' for col in X.columns]
+
+
 
 class MyKNNReg():
     '''
@@ -36,7 +41,7 @@ class MyKNNReg():
         self.train_size = X.shape
 
     def Euclidean(self, X: pd.DataFrame, y: pd.Series) -> pd.Series:
-        return ((X - y) ** 2).sum(axis = 1) ** (1 / 2)
+        return ((X - y) ** 2).sum(axis = 1) ** 0.5
     
     def Chebyshev(self, X: pd.DataFrame, y: pd.Series) -> pd.Series:
         return (X - y).abs().max(axis = 1)
@@ -45,13 +50,15 @@ class MyKNNReg():
         return (X - y).abs().sum(axis = 1)
     
     def Cosine(self, X: pd.DataFrame, y: pd.Series) -> pd.Series:
-        return 1 - (X * y).sum(axis = 1) / (y ** 2).sum() ** (1 / 2) / (X ** 2).sum(axis = 1) ** (1 / 2)
+        return 1 - (X * y).sum(axis = 1) / (y ** 2).sum() ** 0.5 / (X ** 2).sum(axis = 1) ** 0.5
 
     def predict(self, X_test: pd.DataFrame):
         ans = []
-        for i in range(X_test.shape[0]):
-            distances = self.metric(self.X_train, X_test.iloc[i]).sort_values().iloc[:self.k]
-            dependencies = self.y_train.iloc[distances.index]
+        for index, row in X_test.iterrows():
+            distances = self.metric(self.X_train, row).sort_values().head(self.k)
+            dependencies = self.y_train[self.y_train.index.isin(list(distances.index))][list(distances.index)]
+            distances = np.array(distances)
+            dependencies = np.array(dependencies)
             if self.weight == 'rank':
                 dependencies = dependencies / range(1, self.k + 1)
                 avg = dependencies.sum() / sum(1 / x for x in range(1, self.k + 1))
@@ -64,7 +71,7 @@ class MyKNNReg():
         return pd.Series(ans)
 
     
-a = MyKNNReg(k = 5, metric = 'cosine', weight = 'rank')
+a = MyKNNReg(k = 5, metric = 'euclidean', weight = 'rank')
 print(a)
 a.fit(X, y)
-print(a.predict(X))
+print(a.predict(X).sum())
