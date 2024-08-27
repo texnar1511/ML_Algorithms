@@ -212,36 +212,34 @@ class MyBoostReg():
         return ans[:-1] 
     
     def MSELoss(self, y_pred: pd.Series, y_true: pd.Series) -> pd.Series:
-        return ((y_pred - y_true) ** 2).dropna()
+        return (y_pred - y_true).dropna() ** 2
     
     def MSEGradient(self, y_pred: pd.Series, y_true: pd.Series) -> pd.Series:
-        return ((y_pred - y_true) * 2).dropna()
+        return (y_pred - y_true).dropna() * 2
     
     def MAELoss(self, y_pred: pd.Series, y_true: pd.Series) -> pd.Series:
-        return ((y_pred - y_true).abs()).dropna()
+        return (y_pred - y_true).dropna().abs()
     
     def MAEGradient(self, y_pred: pd.Series, y_true: pd.Series) -> pd.Series:
-        return pd.Series(np.sign(y_pred - y_true)).dropna()
+        return pd.Series(np.sign((y_pred - y_true).dropna()))
     
     def MSEMetric(self, y_pred: pd.Series, y_true: pd.Series) -> float:
-        return ((y_pred - y_true) ** 2).mean()
+        return ((y_pred - y_true).dropna() ** 2).mean()
     
     def MAEMetric(self, y_pred: pd.Series, y_true: pd.Series) -> float:
-        return (y_pred - y_true).abs().mean()
+        return (y_pred - y_true).dropna().abs().mean()
     
     def RMSEMetric(self, y_pred: pd.Series, y_true: pd.Series) -> float:
-        return ((y_pred - y_true) ** 2).mean() ** 0.5
+        return ((y_pred - y_true).dropna() ** 2).mean() ** 0.5
     
     def R2Metric(self, y_pred: pd.Series, y_true: pd.Series) -> float:
-        return 1 - ((y_pred - y_true) ** 2).sum() / ((y_true.mean() - y_true) ** 2).sum()
+        return 1 - ((y_pred - y_true).dropna() ** 2).sum() / ((y_true.mean() - y_true).dropna() ** 2).sum()
     
     def MAPEMetric(self, y_pred: pd.Series, y_true: pd.Series) -> float:
-        return (1 - y_pred / y_true).abs().mean() * 100
+        return (1 - y_pred / y_true).dropna().abs().mean() * 100
     
-    def Stopping(self, scores, count):
-        return len([i for i in scores[-count:] if i >= scores[-count - 1]]) == count if len(scores) >= count + 1 else False 
-            
-            
+    def check(self, scores, stop):
+        return len([i for i in scores[-stop:] if i >= scores[-stop - 1]]) == stop if len(scores) >= stop + 1 else False
     
     def fit(self, X: pd.DataFrame, y: pd.Series, X_eval: pd.DataFrame = None, y_eval: pd.Series = None, early_stopping: int = None, verbose: int = None) -> None:
         for column in X:
@@ -249,12 +247,14 @@ class MyBoostReg():
         random.seed(self.random_state)
         self.pred_0 = y.mean() if self.loss == 'MSE' else y.median()    
         F = self.pred_0
-        scores = []
+        eval_scores = []
+        best_scores = []
         for i in range(1, self.n_estimators + 1):
             cols_idx = random.sample(list(X.columns), round(X.shape[1] * self.max_features))
             rows_idx = random.sample(range(X.shape[0]),  round(X.shape[0] * self.max_samples))
             X_s = X[cols_idx].iloc[rows_idx]
             y_s = y.iloc[rows_idx]
+            loss_value = self.MSELoss(F, y_s) if self.loss == 'MSE' else self.MAELoss(F, y_s)
             gradient = self.MSEGradient(F, y_s) if self.loss == 'MSE' else self.MAEGradient(F, y_s)
             tree_reg = MyTreeReg(self.max_depth, self.min_samples_split, self.max_leafs, self.bins, len(X))
             tree_reg.fit(X_s, -gradient)
@@ -262,21 +262,25 @@ class MyBoostReg():
             for k, v in tree_reg.fi.items():
                 self.fi[k] += v
             self.trees += [tree_reg]
-            loss_value = self.MSELoss(F, y_s) if self.loss == 'MSE' else self.MAELoss(F, y_s)
-            self.best_score = loss_value.mean() if not self.metric else self.metric(tree_reg.predict(X), y)
-            if early_stopping is not None and X_eval is not None and y_eval is not None:
-                eval_loss = self.MSELoss(F, y_eval) if self.loss == 'MSE' else self.MAELoss(F, y_eval)
-                eval_score = eval_loss.mean() if not self.metric else self.metric(tree_reg.predict(X_eval), y_eval)
-                scores += [eval_score]
-            if verbose and not i % verbose:
-                print(f'{i}. Loss[{self.loss}]: {loss_value.mean()}' + (f' | {self.metric.__name__[:-6]}: {self.best_score}' if self.metric else '') + (f' | eval: {eval_score}' if self.metric and early_stopping is not None and X_eval is not None and y_eval is not None else ''))
             F += tree_reg.predict(X) * (self.learning_rate if not callable(self.learning_rate) else self.learning_rate(i))
-            print(scores)
-            print(self.Stopping(scores, early_stopping))
-            if self.Stopping(scores, early_stopping):
-                self.trees = self.trees[:-early_stopping]
-                self.best_score = scores[-early_stopping - 1]
-                break
+            self.best_score = loss_value.mean() if not self.metric else self.metric(self.predict(X), y)
+            best_scores += [self.best_score]
+            if X_eval is not None and y_eval is not None and early_stopping is not None:
+                X_eval.reset_index(drop = True, inplace = True)
+                y_eval.reset_index(drop = True, inplace = True)
+                eval_loss_value = self.MSELoss(F, y_eval) if self.loss == 'MSE' else self.MAELoss(F, y_eval)
+                eval_score = eval_loss_value.mean() if not self.metric else self.metric(self.predict(X_eval), y_eval)
+                eval_scores += [eval_score]
+                if self.check(eval_scores, early_stopping):
+                    #print('early stopping')
+                    self.trees = self.trees[:-early_stopping]
+                    self.best_score = eval_scores[-early_stopping - 1]
+                    print(eval_scores)
+                    print(best_scores)
+                    break
+            if verbose and not i % verbose:
+                print(f'{i}. Loss[{self.loss}]: {loss_value.mean()}' + (f' | {self.metric.__name__[:-6]}: {self.best_score}' if self.metric else '') + (f' | eval: {eval_score}' if X_eval is not None and y_eval is not None and early_stopping is not None else ''))
+            #break
         else:
             loss_value = self.MSELoss(F, y) if self.loss == 'MSE' else self.MAELoss(F, y)
             self.best_score = loss_value.mean() if not self.metric else self.metric(self.predict(X), y)
@@ -292,13 +296,13 @@ X = pd.DataFrame(X)
 y = pd.Series(y)
 X.columns = [f'col_{col}' for col in X.columns]
 
-X_eval, y_eval = make_regression(n_samples = 50, n_features = 4, n_informative = 10, noise = 15, random_state = 42)
+X_eval, y_eval = make_regression(n_samples = 10, n_features = 4, n_informative = 10, noise = 15, random_state = 42)
 X_eval = pd.DataFrame(X_eval)
 y_eval = pd.Series(y_eval)
 X_eval.columns = [f'col_{col}' for col in X_eval.columns]
     
-a = MyBoostReg(n_estimators = 20, loss = 'MAE', metric = 'MAPE')
-a.fit(X, y, X_eval, y_eval, early_stopping = 4, verbose = 3)
+a = MyBoostReg(n_estimators = 20, loss = 'MSE', metric = 'MSE')
+a.fit(X, y, X_eval, y_eval, early_stopping = 2, verbose = 1)
 print(a.pred_0)
 print(a.predict(X).sum())
 print(a.best_score)

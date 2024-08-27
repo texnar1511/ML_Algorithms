@@ -1,77 +1,68 @@
 import numpy as np
 import pandas as pd
 from sklearn.datasets import make_regression
-import random
 
-pd.set_option('display.max_rows', None)
+class MyKNNReg():
+    
+    def __init__(self, k: int = 3, metric: str = 'euclidean', weight: str = 'uniform') -> None:
+        self.k: int = k
+        self.train_size: tuple = (0, 0)
+        self._metrics: dict = {'euclidean': self.Euclidean, 'chebyshev': self.Chebyshev, 'manhattan': self.Manhattan, 'cosine': self.Cosine}
+        self.metric = self._metrics[metric]
+        self.weight: str = weight
+        
+    def __str__(self) -> str:
+        ans = 'MyKNNReg class:'
+        for key in self.__dict__:
+            ans += f' {key}={self.__dict__[key]},'
+        return ans[:-1]
+    
+    def Euclidean(self, row: pd.Series, X: pd.DataFrame) -> pd.Series:
+        return ((X - row) ** 2).sum(axis = 1) ** 0.5
+    
+    def Chebyshev(self, row: pd.Series, X: pd.DataFrame) -> pd.Series:
+        return (X - row).abs().max(axis = 1)
+    
+    def Manhattan(self, row: pd.Series, X: pd.DataFrame) -> pd.Series:
+        return (X - row).abs().sum(axis = 1)
+    
+    def Cosine(self, row: pd.Series, X: pd.DataFrame) -> pd.Series:
+        return 1 - (X * row).sum(axis = 1) / (row ** 2).sum() ** 0.5 / (X ** 2).sum(axis = 1) ** 0.5
+    
+    def fit(self, X: pd.DataFrame, y: pd.Series):
+        self.X = X
+        self.y = y
+        self.train_size = X.shape
+        
+    def predict(self, X: pd.DataFrame) -> pd.Series:
+        ans = []
+        for index, row in X.iterrows():
+            neighbors = self.metric(row, self.X).sort_values().head(self.k)
+            indices = neighbors.index.tolist()
+            an = []
+            if self.weight == 'uniform':
+                an = self.y.iloc[indices].mean()
+            elif self.weight == 'rank':
+                c = np.array(self.y.iloc[indices])
+                r = np.array(range(1, self.k + 1))
+                an = (c / r).sum() / (1 / r).sum()
+            elif self.weight == 'distance':
+                c = np.array(self.y.iloc[indices])
+                d = np.array(neighbors)
+                an = (c / d).sum() / (1 / d).sum()
+            ans += [an]
+        return pd.Series(ans)
 
-X, y = make_regression(n_samples=1000, n_features=14, n_informative=10, noise=15, random_state=42)
+X, y = make_regression(n_samples=15, n_features=14, n_informative=10, random_state=42)
 X = pd.DataFrame(X)
 y = pd.Series(y)
 X.columns = [f'col_{col}' for col in X.columns]
 
+X_test, y_test = make_regression(n_samples=15, n_features=14, n_informative=10, random_state=40)
+X_test = pd.DataFrame(X_test)
+y_test = pd.Series(y_test)
+X_test.columns = [f'col_{col}' for col in X_test.columns]
 
-
-class MyKNNReg():
-    '''
-        K Nearest Neighbors Regression
-    '''
-
-    def __init__(self, k = 3, metric = 'euclidean', weight = 'uniform'):
-        self.k = k
-        self.train_size = (0, 0)
-        self._metrics = {
-            'euclidean': self.Euclidean,
-            'chebyshev': self.Chebyshev,
-            'manhattan': self.Manhattan,
-            'cosine': self.Cosine
-            }
-        self.metric = self._metrics.get(metric, None)
-        self.weight = weight
-
-    def __str__(self):
-        ans = 'MyKNNReg class: '
-        for key in self.__dict__:
-            ans += f'{key}={self.__dict__[key]}, '
-        return ans[:-2]
-    
-    def fit(self, X: pd.DataFrame, y: pd.Series):
-        self.X_train = X
-        self.y_train = y
-        self.train_size = X.shape
-
-    def Euclidean(self, X: pd.DataFrame, y: pd.Series) -> pd.Series:
-        return ((X - y) ** 2).sum(axis = 1) ** 0.5
-    
-    def Chebyshev(self, X: pd.DataFrame, y: pd.Series) -> pd.Series:
-        return (X - y).abs().max(axis = 1)
-    
-    def Manhattan(self, X: pd.DataFrame, y: pd.Series) -> pd.Series:
-        return (X - y).abs().sum(axis = 1)
-    
-    def Cosine(self, X: pd.DataFrame, y: pd.Series) -> pd.Series:
-        return 1 - (X * y).sum(axis = 1) / (y ** 2).sum() ** 0.5 / (X ** 2).sum(axis = 1) ** 0.5
-
-    def predict(self, X_test: pd.DataFrame):
-        ans = []
-        for index, row in X_test.iterrows():
-            distances = self.metric(self.X_train, row).sort_values().head(self.k)
-            dependencies = self.y_train[self.y_train.index.isin(list(distances.index))][list(distances.index)]
-            distances = np.array(distances)
-            dependencies = np.array(dependencies)
-            if self.weight == 'rank':
-                dependencies = dependencies / range(1, self.k + 1)
-                avg = dependencies.sum() / sum(1 / x for x in range(1, self.k + 1))
-            elif self.weight == 'distance':
-                dependencies = dependencies / distances
-                avg = dependencies.sum() / (1 / distances).sum()
-            else:
-                avg = dependencies.mean()
-            ans += [avg]
-        return pd.Series(ans)
-
-    
-a = MyKNNReg(k = 5, metric = 'euclidean', weight = 'rank')
-print(a)
+a = MyKNNReg(weight = 'distance')
 a.fit(X, y)
-print(a.predict(X).sum())
+print(a.predict(X_test))
